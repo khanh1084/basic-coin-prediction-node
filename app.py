@@ -1,4 +1,5 @@
 import json
+import os
 import pickle
 import pandas as pd
 import numpy as np
@@ -9,38 +10,48 @@ from config import model_file_path
 
 app = Flask(__name__)
 
+currencies = ["ETH", "BTC", "SOL", "BNB", "ARB"]
+
 
 def update_data():
     """Download price data, format data and train model."""
-    download_data()
-    format_data()
-    train_model()
+    for currency in currencies:
+        download_data(currency)
+        format_data(currency)
+        train_model(currency)
 
 
-def get_eth_inference():
+def get_inference(currency_name):
     """Load model and predict current price."""
-    with open(model_file_path, "rb") as f:
-        loaded_model = pickle.load(f)
+    currency_model_file_path = os.path.join(
+        "inference-data", f"{currency_name}_model.pkl"
+    )
+    if not os.path.exists(currency_model_file_path):
+        raise FileNotFoundError(
+            f"Model file for {currency_name} not found at {currency_model_file_path}"
+        )
 
-    now_timestamp = pd.Timestamp(datetime.now()).timestamp()
-    X_new = np.array([now_timestamp]).reshape(-1, 1)
-    current_price_pred = loaded_model.predict(X_new)
+    with open(currency_model_file_path, "rb") as f:
+        model = pickle.load(f)
 
-    return current_price_pred[0][0]
+    # Assuming you have some input data to make predictions
+    # For example, let's use the current timestamp as input
+    current_timestamp = datetime.now().timestamp()
+    prediction = model.predict([[current_timestamp]])
+
+    return prediction[0][0]
 
 
 @app.route("/inference/<string:token>")
 def generate_inference(token):
     """Generate inference for given token."""
-    if not token or token != "ETH":
-        error_msg = "Token is required" if not token else "Token not supported"
-        return Response(json.dumps({"error": error_msg}), status=400, mimetype='application/json')
-
     try:
-        inference = get_eth_inference()
-        return Response(str(inference), status=200)
+        price = get_inference(token)
+        return jsonify({"currency": token, "predicted_price": price})
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
     except Exception as e:
-        return Response(json.dumps({"error": str(e)}), status=500, mimetype='application/json')
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/update")

@@ -7,15 +7,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from updater import download_binance_monthly_data, download_binance_daily_data
 from config import data_base_path, model_file_path
+import glob
 
 
 binance_data_path = os.path.join(data_base_path, "binance/futures-klines")
-training_price_data_path = os.path.join(data_base_path, "eth_price_data.csv")
 
 
-def download_data():
+def download_data(currency_name):
     cm_or_um = "um"
-    symbols = ["ETHUSDT"]
+    symbols = [f"{currency_name}USDT"]
     intervals = ["1d"]
     years = ["2020", "2021", "2022", "2023", "2024"]
     months = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
@@ -32,48 +32,79 @@ def download_data():
     )
     print(f"Downloaded daily data to {download_path}.")
 
+    # Extract ZIP files
+    zip_files = glob.glob(os.path.join(download_path, "*.zip"))
+    for zip_file in zip_files:
+        with ZipFile(zip_file, "r") as zip_ref:
+            zip_ref.extractall(download_path)
+        # print(f"Extracted {zip_file} to {download_path}")
 
-def format_data():
-    files = sorted([x for x in os.listdir(binance_data_path)])
+    # Log the files in the download path
+    all_files = glob.glob(os.path.join(download_path, "*.csv"))
+    # if not all_files:
+    #     print(f"No CSV files found in {download_path} after extraction.")
+    # else:
+    #     print(f"CSV files found in {download_path}: {all_files}")
 
-    # No files to process
-    if len(files) == 0:
-        return
 
-    price_df = pd.DataFrame()
-    for file in files:
-        zip_file_path = os.path.join(binance_data_path, file)
+def format_data(currency_name):
+    training_price_data_path = os.path.join(
+        data_base_path, f"data/{currency_name}_price_data.csv"
+    )
+    binance_data_path = os.path.join(data_base_path, "binance/futures-klines")
 
-        if not zip_file_path.endswith(".zip"):
+    # Combine all CSV files in the binance_data_path into one DataFrame
+    all_files = glob.glob(os.path.join(binance_data_path, "*.csv"))
+
+    if not all_files:
+        raise FileNotFoundError(f"No CSV files found in {binance_data_path}")
+
+    df_list = []
+    expected_columns = [
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_volume",
+        "count",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+        "ignore",
+    ]
+    for file in all_files:
+        df = pd.read_csv(file)
+        if df.columns.tolist() != expected_columns:
+            # print(f"Skipping {file} due to unexpected columns: {df.columns.tolist()}")
             continue
+        # print(f"Columns in {file}: {df.columns.tolist()}")
+        df_list.append(df)
 
-        myzip = ZipFile(zip_file_path)
-        with myzip.open(myzip.filelist[0]) as f:
-            line = f.readline()
-            header = 0 if line.decode("utf-8").startswith("open_time") else None
-        df = pd.read_csv(myzip.open(myzip.filelist[0]), header=header).iloc[:, :11]
-        df.columns = [
-            "start_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "end_time",
-            "volume_usd",
-            "n_trades",
-            "taker_volume",
-            "taker_volume_usd",
-        ]
-        df.index = [pd.Timestamp(x + 1, unit="ms") for x in df["end_time"]]
-        df.index.name = "date"
-        price_df = pd.concat([price_df, df])
+    if not df_list:
+        raise ValueError("No valid CSV files found with the expected columns.")
 
-    price_df.sort_index().to_csv(training_price_data_path)
+    combined_df = pd.concat(df_list, ignore_index=True)
+
+    # Add 'date' column derived from 'open_time'
+    combined_df["date"] = pd.to_datetime(combined_df["open_time"], unit="ms")
+
+    # Log the first few rows of the combined DataFrame
+    # print("Combined DataFrame preview:")
+    # print(combined_df.head())
+
+    # Save the combined DataFrame to the training_price_data_path
+    os.makedirs(os.path.dirname(training_price_data_path), exist_ok=True)
+    combined_df.to_csv(training_price_data_path, index=False)
+    print(f"Formatted data saved to {training_price_data_path}")
 
 
-def train_model():
-    # Load the eth price data
+def train_model(currency_name):
+    training_price_data_path = os.path.join(
+        data_base_path, f"data/{currency_name}_price_data.csv"
+    )
+    # Load the coin price data
     price_data = pd.read_csv(training_price_data_path)
     df = pd.DataFrame()
 
@@ -97,8 +128,11 @@ def train_model():
     # create the model's parent directory if it doesn't exist
     os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
 
-    # Save the trained model to a file
-    with open(model_file_path, "wb") as f:
+    # Save the trained model to a file with a unique name
+    currency_model_file_path = os.path.join(
+        os.path.dirname(model_file_path), f"{currency_name}_model.pkl"
+    )
+    with open(currency_model_file_path, "wb") as f:
         pickle.dump(model, f)
 
-    print(f"Trained model saved to {model_file_path}")
+    # print(f"Trained model for {currency_name} saved to {currency_model_file_path}")
